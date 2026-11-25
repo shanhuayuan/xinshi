@@ -239,7 +239,7 @@ func (t *Topic) EventsPage(eventId uint64, limit int) Page {
 
 	for _, event := range t.events[start:end] {
 		copyed, err := cloneEvent(event)
-		if err != nil {
+		if err == nil {
 			page.Events = append(page.Events, copyed)
 		}
 	}
