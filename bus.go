@@ -3,113 +3,77 @@ package xinshi
 import (
 	"errors"
 	"sync"
-	"sync/atomic"
-	"time"
 )
 
-type EventBus struct {
-	mu sync.RWMutex
-
-	// [topic, subscriptionId, subscription]
-	subscribers map[string]map[uint64]*Subscription
-
-	nextId atomic.Uint64
+type Bus struct {
+	mu     sync.RWMutex
+	config Config
+	topics map[string]*Topic
+	closed bool
 }
 
-func NewEventBus() *EventBus {
-	return &EventBus{
-		subscribers: make(map[string]map[uint64]*Subscription),
-	}
+func NewBus(config Config) *Bus {
+	return &Bus{config: config.normalized(), topics: make(map[string]*Topic)}
 }
 
-// BUG
-// 发布
-func (b *EventBus) Publish(topic string, event Event) (int, error) {
-	if topic == "" {
-		return 0, errors.New("invalid topic")
+func (b *Bus) GetTopic(name string) (*Topic, error) {
+	if name == "" {
+		return nil, errors.New("invalid topic name")
 	}
 
-	if event.CreatedAt.IsZero() {
-		event.CreatedAt = time.Now()
+	b.mu.RLock()
+	t := b.topics[name]
+	closed := b.closed
+	b.mu.RUnlock()
+
+	if t != nil {
+		return t, nil
 	}
 
-	b.mu.Lock()
-
-	delivered, topicSubs := 0, b.subscribers[topic]
-	var overflowed []*Subscription
-
-	for idx, sub := range topicSubs {
-		copyed := event
-		copyed.Data = append([]byte(nil), copyed.Data...)
-
-		select {
-		case sub.queue <- copyed:
-			delivered++
-		default:
-			delete(topicSubs, idx)
-			overflowed = append(overflowed, sub)
-		}
-	}
-
-	if len(topicSubs) == 0 {
-		delete(b.subscribers, topic)
-	}
-
-	b.mu.Unlock()
-
-	for _, sub := range overflowed {
-		sub.cancel()
-	}
-
-	return delivered, nil
-}
-
-// 订阅
-func (b *EventBus) Subscribe(topic string, bufferSize int) (*Subscription, error) {
-	if topic == "" {
-		return nil, errors.New("invalid topic")
-	}
-
-	bufferSize = max(bufferSize, 0)
-
-	sub := &Subscription{
-		id:    b.nextId.Add(1),
-		topic: topic,
-		queue: make(chan Event, bufferSize),
-		done:  make(chan struct{}),
+	if closed {
+		return nil, errors.New("cloesed")
 	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.subscribers[topic] == nil {
-		b.subscribers[topic] = make(map[uint64]*Subscription)
+	if b.closed {
+		return nil, errors.New("closed")
 	}
 
-	b.subscribers[topic][sub.id] = sub
-	return sub, nil
+	if t = b.topics[name]; t == nil {
+		t = NewTopic(name, b.config)
+		b.topics[name] = t
+	}
+
+	return t, nil
 }
 
-func (b *EventBus) Unsubscribe(sub *Subscription) {
-	if sub == nil {
-		return
+func (b *Bus) Publish(name, _type string, data any) (Event, error) {
+	t, err := b.GetTopic(name)
+	if err != nil {
+		return Event{}, err
 	}
 
+	return t.Publish(_type, data)
+}
+
+func (b *Bus) Close() {
 	b.mu.Lock()
-
-	topicSubs := b.subscribers[sub.topic]
-
-	if topicSubs[sub.id] != sub {
+	if b.closed {
 		b.mu.Unlock()
 		return
 	}
 
-	delete(topicSubs, sub.id)
+	b.closed = true
+	topics := make([]*Topic, 0, len(b.topics))
 
-	if len(topicSubs) == 0 {
-		delete(b.subscribers, sub.topic)
+	for _, t := range topics {
+		topics = append(topics, t)
 	}
 
 	b.mu.Unlock()
-	sub.cancel()
+	for _, t := range topics {
+		t.Close()
+	}
 }
