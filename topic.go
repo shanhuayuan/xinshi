@@ -33,7 +33,16 @@ func NewTopic(name string, config Config) *Topic {
 }
 
 func (t *Topic) trimLocked() {
-
+	for len(t.events) > 0 && ((t.config.MaxEvents > 0 && len(t.events) > t.config.MaxEvents) || (t.config.MaxEventBytes > 0 && t.eventBytes > t.config.MaxEventBytes)) {
+		t.eventBytes -= estimate(t.events[0])
+		t.events[0] = Event{}
+		t.events = t.events[1:]
+	}
+	if len(t.events) > 0 {
+		t.earliest = t.events[0].Id
+	} else {
+		t.earliest = t.next + 1
+	}
 }
 
 func (t *Topic) remove(subId uint64, expected *Subscription) {
